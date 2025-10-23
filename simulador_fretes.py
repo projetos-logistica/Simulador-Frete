@@ -1,4 +1,3 @@
-# simulador_fretes.py
 import os
 import re
 import pandas as pd
@@ -9,14 +8,34 @@ from pathlib import Path
 from typing import Optional, List, Tuple  # compatível com 3.8/3.9
 
 # ==========================================================
+# BOOTSTRAP PARA SUBMÓDULO PRIVADO (necessário na Streamlit Cloud)
+# ==========================================================
+# Lê a chave privada de st.secrets["SSH_PRIVATE_KEY"], cria ~/.ssh/id_planilhas
+# e executa "git submodule update --init --recursive" para baixar dados_vtex.
+import subprocess, pathlib
+if "SSH_PRIVATE_KEY" in st.secrets:
+    ssh_dir = pathlib.Path.home() / ".ssh"
+    ssh_dir.mkdir(parents=True, exist_ok=True)
+    key_path = ssh_dir / "id_planilhas"
+    # grava a chave privada a partir dos secrets
+    key_path.write_text(st.secrets["SSH_PRIVATE_KEY"])
+    os.chmod(key_path, 0o600)
+    # usa essa chave e ignora verificação de host (evita interactive prompt)
+    os.environ["GIT_SSH_COMMAND"] = f"ssh -i {key_path} -o StrictHostKeyChecking=no"
+    try:
+        subprocess.run(["git", "submodule", "sync"], check=True)
+        subprocess.run(["git", "submodule", "update", "--init", "--recursive"], check=True)
+    except Exception as e:
+        st.warning(f"Não foi possível atualizar o submódulo privado: {e}")
+# ==========================================================
+
+# ==========================================================
 # CONFIGURAÇÕES INICIAIS
 # ==========================================================
 st.set_page_config(page_title="Simulador de Fretes VTEX", layout="wide")
 
-# Caminho da pasta das planilhas VTEX  ✅ (AJUSTE ÚNICO)
-# A pasta "dados_vtex" deve existir ao lado deste arquivo
-# (pode ser um submódulo do repo privado ou uma cópia local)
-PASTA_VTEX = str(Path(__file__).parent / "dados_vtex")
+# Caminho da pasta das planilhas VTEX (AGORA LENDO O SUBMÓDULO)
+PASTA_VTEX = "dados_vtex"
 
 # Ocultar apenas na TELA (no Excel salvo continuará presente)
 HIDE_COLS_ON_SCREEN: List[str] = ["Arquivo_Origem", "Aba_Origem"]
@@ -166,6 +185,7 @@ def destacar_min_max(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     if df.empty:
         return df.style
 
+    # --- formatadores ---
     def brl(x):
         try:
             if pd.isna(x): return ""
@@ -188,42 +208,52 @@ def destacar_min_max(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
         except Exception:
             return x
 
+    # min/max antes de formatar
     try:
         min_idx = df["FRETE_TOTAL"].idxmin() if "FRETE_TOTAL" in df.columns else None
         max_idx = df["FRETE_TOTAL"].idxmax() if "FRETE_TOTAL" in df.columns else None
     except Exception:
         min_idx = max_idx = None
 
+    # cópia para exibição (strings já formatadas)
     display_df = df.copy()
-    for c in ["FRETE_PESO", "FRETE_TOTAL"]:
-        if c in display_df.columns:
-            display_df[c] = display_df[c].map(brl)
-    for c in ["PESO_INICIAL", "PESO_FINAL"]:
-        if c in display_df.columns:
-            display_df[c] = display_df[c].map(three_dec)
-    for c in ["GRIS_ADVALOREM", "IMPOSTO"]:
-        if c in display_df.columns:
-            display_df[c] = display_df[c].map(pct)
+
+    brl_cols = [c for c in ["FRETE_PESO", "FRETE_TOTAL"] if c in display_df.columns]
+    weight_cols = [c for c in ["PESO_INICIAL", "PESO_FINAL"] if c in display_df.columns]
+    percent_cols = [c for c in ["GRIS_ADVALOREM", "IMPOSTO"] if c in display_df.columns]
+
+    for c in brl_cols:
+        display_df[c] = display_df[c].map(brl)
+    for c in weight_cols:
+        display_df[c] = display_df[c].map(three_dec)   # 3 casas decimais
+    for c in percent_cols:
+        display_df[c] = display_df[c].map(pct)
 
     def _row_style(row):
         if min_idx is not None and row.name == min_idx:
-            return ["background-color: #d1fae5"] * len(row)
+            return ["background-color: #d1fae5"] * len(row)  # verde
         if max_idx is not None and row.name == max_idx:
-            return ["background-color: #fee2e2"] * len(row)
+            return ["background-color: #fee2e2"] * len(row)  # vermelho
         return [""] * len(row)
 
     return display_df.style.apply(_row_style, axis=1)
 
 # ============== Tabela SEM destaque (para o modo Upload) ==============
 def show_results_plain(df_display: pd.DataFrame):
+    """
+    Tabela SEM destaque (sem verde/vermelho), mas com as mesmas
+    formatações: R$, %, e 3 casas nos pesos. Também renomeia POLYGON -> Cidade/UF.
+    """
     if df_display.empty:
         st.dataframe(df_display, use_container_width=True)
         return
 
+    # Copia para exibição
     df_view = df_display.copy()
     if "POLYGON" in df_view.columns:
         df_view = df_view.rename(columns={"POLYGON": "Cidade/UF"})
 
+    # --- formatadores iguais aos do destacar_min_max ---
     def brl(x):
         try:
             if pd.isna(x): return ""
@@ -246,6 +276,7 @@ def show_results_plain(df_display: pd.DataFrame):
         except Exception:
             return x
 
+    # Aplica formatação como texto
     if "FRETE_PESO" in df_view.columns:
         df_view["FRETE_PESO"] = df_view["FRETE_PESO"].map(brl)
     if "FRETE_TOTAL" in df_view.columns:
@@ -261,6 +292,12 @@ def show_results_plain(df_display: pd.DataFrame):
 
 # ===================== ÚNICO RESULTADO (com destaque) =====================
 def show_results_single(df_display: pd.DataFrame):
+    """
+    Única tabela com:
+      - destaque verde/vermelho (menor/maior FRETE_TOTAL)
+      - formatação R$ / % / 3 casas nos pesos
+      - cabeçalho 'Cidade/UF' no lugar de 'POLYGON'
+    """
     if df_display.empty:
         st.dataframe(df_display, use_container_width=True)
         return
@@ -361,9 +398,11 @@ def calcular_frete(df_vtex: pd.DataFrame, cep_destino: str, valor_nf: float, pes
     excesso = (float(peso) - df_filtrado["KG_FIM"]).clip(lower=0)
     frete_peso = df_filtrado["ABS_COST"] + excesso * df_filtrado["EXTRA_PER_KG"]
 
+    # Percentuais
     gris_percent = df_filtrado["PRICE_PERCENT"].fillna(0.5)  # %
     uf, perc_imp = buscar_uf_cep(cep_num)                    # %
 
+    # Cálculo financeiro
     gris_valor = (gris_percent / 100.0) * float(valor_nf)
     sub_total = frete_peso + gris_valor
     fator = 1.0 - (perc_imp / 100.0)
@@ -479,7 +518,7 @@ else:
         try:
             df_upload = pd.read_excel(arquivo)
             colunas_obrigatorias = ["ORIGEM", "CEP DESTINO", "VALOR DE NFE", "PESO"]
-            faltantes = [c for c in colunas_obrigatorias if c not in df_upload.columns]
+            faltantes = [c for c in colunas_obrigatorias if c não in df_upload.columns]
 
             if faltantes:
                 st.error(f"❌ Arquivo inválido. Faltam as colunas obrigatórias: {', '.join(faltantes)}")
@@ -542,7 +581,9 @@ else:
                     st.success(f"✅ Simulações concluídas. Resultado salvo em:\n{caminho}")
 
                     df_final_display = df_final.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
+                    # >>> Upload: sem destaque (apenas formatação) e POLYGON -> Cidade/UF
                     show_results_plain(df_final_display.head(50))
+                    # <<<
                 else:
                     st.warning("Nenhum resultado encontrado para as linhas enviadas.")
         except Exception as e:
