@@ -8,12 +8,34 @@ from pathlib import Path
 from typing import Optional, List, Tuple  # compatível com 3.8/3.9
 
 # ==========================================================
+# BOOTSTRAP PARA SUBMÓDULO PRIVADO (necessário na Streamlit Cloud)
+# ==========================================================
+# Lê a chave privada de st.secrets["SSH_PRIVATE_KEY"], cria ~/.ssh/id_planilhas
+# e executa "git submodule update --init --recursive" para baixar dados_vtex.
+import subprocess, pathlib
+if "SSH_PRIVATE_KEY" in st.secrets:
+    ssh_dir = pathlib.Path.home() / ".ssh"
+    ssh_dir.mkdir(parents=True, exist_ok=True)
+    key_path = ssh_dir / "id_planilhas"
+    # grava a chave privada a partir dos secrets
+    key_path.write_text(st.secrets["SSH_PRIVATE_KEY"])
+    os.chmod(key_path, 0o600)
+    # usa essa chave e ignora verificação de host (evita interactive prompt)
+    os.environ["GIT_SSH_COMMAND"] = f"ssh -i {key_path} -o StrictHostKeyChecking=no"
+    try:
+        subprocess.run(["git", "submodule", "sync"], check=True)
+        subprocess.run(["git", "submodule", "update", "--init", "--recursive"], check=True)
+    except Exception as e:
+        st.warning(f"Não foi possível atualizar o submódulo privado: {e}")
+# ==========================================================
+
+# ==========================================================
 # CONFIGURAÇÕES INICIAIS
 # ==========================================================
 st.set_page_config(page_title="Simulador de Fretes VTEX", layout="wide")
 
-# Caminho da pasta das planilhas VTEX
-PASTA_VTEX = r"P:\Transporte B2C\Igor Lima\Calculadora de frete"
+# Caminho da pasta das planilhas VTEX (AGORA LENDO O SUBMÓDULO)
+PASTA_VTEX = "dados_vtex"
 
 # Ocultar apenas na TELA (no Excel salvo continuará presente)
 HIDE_COLS_ON_SCREEN: List[str] = ["Arquivo_Origem", "Aba_Origem"]
@@ -497,6 +519,7 @@ else:
             df_upload = pd.read_excel(arquivo)
             colunas_obrigatorias = ["ORIGEM", "CEP DESTINO", "VALOR DE NFE", "PESO"]
             faltantes = [c for c in colunas_obrigatorias if c not in df_upload.columns]
+
 
             if faltantes:
                 st.error(f"❌ Arquivo inválido. Faltam as colunas obrigatórias: {', '.join(faltantes)}")
