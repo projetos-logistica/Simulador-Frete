@@ -1,4 +1,4 @@
 [submodule "dados_vtex"]
 	path = dados_vtex
-	url = https://github.com/projetos-logistica/Planilhas_preco.git
+	url = git@github.com:projetos-logistica/Planilhas_preco.git
 	branch = main
