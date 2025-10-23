@@ -518,7 +518,8 @@ else:
         try:
             df_upload = pd.read_excel(arquivo)
             colunas_obrigatorias = ["ORIGEM", "CEP DESTINO", "VALOR DE NFE", "PESO"]
-            faltantes = [c for c in colunas_obrigatorias if c não in df_upload.columns]
+            faltantes = [c for c in colunas_obrigatorias if c not in df_upload.columns]
+
 
             if faltantes:
                 st.error(f"❌ Arquivo inválido. Faltam as colunas obrigatórias: {', '.join(faltantes)}")
