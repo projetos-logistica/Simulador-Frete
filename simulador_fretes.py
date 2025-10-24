@@ -6,27 +6,39 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple  # compatível com 3.8/3.9
+import io  # <-- ADICIONADO para download em memória
 
 # ==========================================================
-# BOOTSTRAP PARA SUBMÓDULO PRIVADO (necessário na Streamlit Cloud)
+# BOOTSTRAP PARA SUBMÓDULO PRIVADO (Streamlit Cloud)
 # ==========================================================
 # Lê a chave privada de st.secrets["SSH_PRIVATE_KEY"], cria ~/.ssh/id_planilhas
 # e executa "git submodule update --init --recursive" para baixar dados_vtex.
 import subprocess, pathlib
-if "SSH_PRIVATE_KEY" in st.secrets:
+
+@st.cache_resource(show_spinner=False)  # <-- ADICIONADO: cacheia por sessão
+def _bootstrap_submodule():
+    if "SSH_PRIVATE_KEY" not in st.secrets:
+        st.warning("SSH_PRIVATE_KEY não configurada nos Secrets do Streamlit Cloud.")
+        return False
     ssh_dir = pathlib.Path.home() / ".ssh"
     ssh_dir.mkdir(parents=True, exist_ok=True)
     key_path = ssh_dir / "id_planilhas"
-    # grava a chave privada a partir dos secrets
-    key_path.write_text(st.secrets["SSH_PRIVATE_KEY"])
+    key_text = st.secrets["SSH_PRIVATE_KEY"]
+    if not key_text.endswith("\n"):
+        key_text += "\n"
+    key_path.write_text(key_text)
     os.chmod(key_path, 0o600)
     # usa essa chave e ignora verificação de host (evita interactive prompt)
     os.environ["GIT_SSH_COMMAND"] = f"ssh -i {key_path} -o StrictHostKeyChecking=no"
     try:
         subprocess.run(["git", "submodule", "sync"], check=True)
         subprocess.run(["git", "submodule", "update", "--init", "--recursive"], check=True)
+        return True
     except Exception as e:
-        st.warning(f"Não foi possível atualizar o submódulo privado: {e}")
+        st.error(f"Falha ao atualizar submódulo privado: {e}")
+        return False
+
+_bootstrap_submodule()
 # ==========================================================
 
 # ==========================================================
@@ -123,9 +135,10 @@ def hash_arquivos(pasta: str) -> str:
 @st.cache_data(show_spinner=False)
 def carregar_planilhas_vtex(pasta, hash_pasta):
     try:
+        # *** AJUSTE: aceitar somente .xlsx (evita engine .xls no Cloud) ***
         arquivos_excel = [
             f for f in os.listdir(pasta)
-            if not f.startswith("~$") and f.endswith((".xlsx", ".xls")) and "VTEX" in f.upper()
+            if not f.startswith("~$") and f.lower().endswith(".xlsx") and "VTEX" in f.upper()
         ]
     except Exception as e:
         st.warning(f"⚠️ Não foi possível acessar a pasta: {e}")
@@ -143,7 +156,7 @@ def carregar_planilhas_vtex(pasta, hash_pasta):
         caminho_arquivo = os.path.join(pasta, arquivo)
         status_texto.text(f"📄 Lendo {i}/{total_arquivos}: {arquivo}")
         try:
-            xls = pd.ExcelFile(caminho_arquivo, engine="openpyxl")
+            xls = pd.ExcelFile(caminho_arquivo, engine="openpyxl")  # .xlsx
             for aba in xls.sheet_names:
                 try:
                     df = pd.read_excel(xls, sheet_name=aba, engine="openpyxl")
@@ -172,6 +185,14 @@ def salvar_resultado(df_resultado: pd.DataFrame) -> str:
     caminho = os.path.join(desktop, f"resultado_fretes_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
     df_resultado.to_excel(caminho, index=False)
     return caminho
+
+# *** ADICIONADO: versão em memória para usar no Streamlit Cloud ***
+def salvar_resultado_para_download(df_resultado: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df_resultado.to_excel(writer, index=False)
+    buf.seek(0)
+    return buf.getvalue()
 
 # ===================== FORMATAÇÃO + DESTAQUE (FRETE_TOTAL) =====================
 def destacar_min_max(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
@@ -520,7 +541,6 @@ else:
             colunas_obrigatorias = ["ORIGEM", "CEP DESTINO", "VALOR DE NFE", "PESO"]
             faltantes = [c for c in colunas_obrigatorias if c not in df_upload.columns]
 
-
             if faltantes:
                 st.error(f"❌ Arquivo inválido. Faltam as colunas obrigatórias: {', '.join(faltantes)}")
             else:
@@ -578,8 +598,19 @@ else:
 
                 if resultados:
                     df_final = pd.concat(resultados, ignore_index=True)
+
+                    # mantém sua gravação local (para uso desktop)
                     caminho = salvar_resultado(df_final)
                     st.success(f"✅ Simulações concluídas. Resultado salvo em:\n{caminho}")
+
+                    # *** ADICIONADO: botão para baixar no Cloud ***
+                    payload = salvar_resultado_para_download(df_final)
+                    st.download_button(
+                        "⬇️ Baixar resultado (Excel)",
+                        data=payload,
+                        file_name=f"resultado_fretes_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
 
                     df_final_display = df_final.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
                     # >>> Upload: sem destaque (apenas formatação) e POLYGON -> Cidade/UF
