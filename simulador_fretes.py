@@ -8,24 +8,20 @@ import pathlib
 import pandas as pd
 import streamlit as st
 from datetime import datetime
-from typing import Optional, List, Tuple  # compatível com 3.8/3.9
-from contextlib import contextmanager  # para exibir erros na página
+from typing import Optional, List, Tuple
+from contextlib import contextmanager
+import traceback
 
 # ==========================================================
-# CONFIGURAÇÕES INICIAIS — tem que ser o PRIMEIRO st.* do app
+# CONFIGURAÇÕES INICIAIS
 # ==========================================================
 st.set_page_config(page_title="Simulador de Fretes VTEX", layout="wide")
 
-# ===== DEBUG SENTINELA (mostra que o script carregou) =====
-try:
-    print("BOOT: script importado com sucesso", file=sys.stderr)
-    st.caption("🔧 App carregado (sentinela).")
-except Exception as _e:
-    print("BOOT: falha no sentinela:", _e, file=sys.stderr)
-# ==========================================================
+# Sentinela: confirma que o script importou
+print("BOOT: script importado com sucesso", file=sys.stderr)
+st.caption("🔧 App carregado (sentinela).")
 
-# ── MOSTRAR ERROS NA TELA (ajuda debug)
-import traceback
+# Mostrar erros detalhados na página
 st.set_option("client.showErrorDetails", True)
 
 def _streamlit_excepthook(exctype, value, tb):
@@ -35,7 +31,6 @@ sys.excepthook = _streamlit_excepthook
 
 @contextmanager
 def _show_errors_on_page():
-    """Mostra qualquer exceção da UI diretamente na página (evita 'Oh no')."""
     try:
         yield
     except Exception:
@@ -43,32 +38,25 @@ def _show_errors_on_page():
         st.code("".join(traceback.format_exc()))
         st.stop()
 
-# Caminho da pasta das planilhas VTEX (submódulo git)
 PASTA_VTEX = "dados_vtex"
-
-# Ocultar apenas na TELA (no Excel salvo continuará presente)
 HIDE_COLS_ON_SCREEN: List[str] = ["Arquivo_Origem", "Aba_Origem"]
 
 # ==========================================================
-# BOOTSTRAP PARA SUBMÓDULO PRIVADO (Streamlit Cloud)
+# BOOTSTRAP SUBMÓDULO (adiado p/ clique)
 # ==========================================================
-@st.cache_resource(show_spinner=False)  # cacheia por sessão
+@st.cache_resource(show_spinner=False)
 def _bootstrap_submodule() -> bool:
-    # Lê chave privada dos Secrets, grava em ~/.ssh e atualiza submódulo
     if "SSH_PRIVATE_KEY" not in st.secrets:
         st.warning("SSH_PRIVATE_KEY não configurada nos Secrets do Streamlit Cloud.")
         return False
     ssh_dir = pathlib.Path.home() / ".ssh"
     ssh_dir.mkdir(parents=True, exist_ok=True)
     key_path = ssh_dir / "id_planilhas"
-
     key_text = st.secrets["SSH_PRIVATE_KEY"]
     if not key_text.endswith("\n"):
         key_text += "\n"
     key_path.write_text(key_text)
     os.chmod(key_path, 0o600)
-
-    # usa essa chave e ignora verificação de host (evita prompt interativo)
     os.environ["GIT_SSH_COMMAND"] = f"ssh -i {key_path} -o StrictHostKeyChecking=no"
     try:
         subprocess.run(["git", "submodule", "sync"], check=True)
@@ -77,8 +65,6 @@ def _bootstrap_submodule() -> bool:
     except Exception as e:
         st.error(f"Falha ao atualizar submódulo privado: {e}")
         return False
-
-# (removido) _bootstrap_submodule() no topo — só chamamos dentro de carregar_base_rapida()
 
 # ==========================================================
 # FUNÇÕES AUXILIARES
@@ -163,7 +149,6 @@ def hash_arquivos(pasta: str) -> str:
 @st.cache_data(show_spinner=False)
 def carregar_planilhas_vtex(pasta: str, hash_pasta: str) -> pd.DataFrame:
     try:
-        # aceitar somente .xlsx (evita engine .xls no Cloud)
         arquivos_excel = [
             f for f in os.listdir(pasta)
             if not f.startswith("~$") and f.lower().endswith(".xlsx") and "VTEX" in f.upper()
@@ -184,7 +169,7 @@ def carregar_planilhas_vtex(pasta: str, hash_pasta: str) -> pd.DataFrame:
         caminho_arquivo = os.path.join(pasta, arquivo)
         status_texto.text(f"📄 Lendo {i}/{total_arquivos}: {arquivo}")
         try:
-            xls = pd.ExcelFile(caminho_arquivo, engine="openpyxl")  # .xlsx
+            xls = pd.ExcelFile(caminho_arquivo, engine="openpyxl")
             for aba in xls.sheet_names:
                 try:
                     df = pd.read_excel(xls, sheet_name=aba, engine="openpyxl")
@@ -208,38 +193,30 @@ def carregar_planilhas_vtex(pasta: str, hash_pasta: str) -> pd.DataFrame:
         return pd.DataFrame()
     return pd.concat(dfs, ignore_index=True)
 
-# --- cache de disco para acelerar o cold start no Streamlit Cloud ---
+# ===== Cache de /tmp usando PICKLE (leve) =====
 def _cache_path_from_hash(hash_pasta: str) -> str:
-    # cache em /tmp (persistente por execução)
-    return os.path.join("/tmp", f"vtex_cache_{hash_pasta}.parquet")
+    return os.path.join("/tmp", f"vtex_cache_{hash_pasta}.pkl")
 
 def carregar_base_rapida(pasta: str) -> pd.DataFrame:
-    """
-    Lê a base consolidada do cache /tmp. Se não existir, faz bootstrap do submódulo,
-    consolida com carregar_planilhas_vtex(...), salva o parquet e retorna.
-    """
-    # bootstrap do submódulo SÓ aqui (após UI existir)
     _bootstrap_submodule()
-
     h = hash_arquivos(pasta)
     if not h:
         return pd.DataFrame()
     cache_path = _cache_path_from_hash(h)
     if os.path.exists(cache_path):
         try:
-            return pd.read_parquet(cache_path)
+            return pd.read_pickle(cache_path)
         except Exception:
-            pass  # se der erro de parquet, reconstrói
+            pass
     df = carregar_planilhas_vtex(pasta, h)
     if not df.empty:
         try:
-            df.to_parquet(cache_path, index=False)
+            df.to_pickle(cache_path)
         except Exception:
             pass
     return df
 
 def salvar_resultado(df_resultado: pd.DataFrame) -> str:
-    # No Cloud não existe Desktop; usar /tmp como fallback
     desktop = os.path.join(os.path.expanduser("~"), "Desktop")
     destino = desktop if os.path.isdir(desktop) else "/tmp"
     caminho = os.path.join(destino, f"resultado_fretes_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
@@ -247,14 +224,13 @@ def salvar_resultado(df_resultado: pd.DataFrame) -> str:
     return caminho
 
 def salvar_resultado_para_download(df_resultado: pd.DataFrame) -> bytes:
-    # Download direto no navegador (Cloud-friendly)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df_resultado.to_excel(writer, index=False)
     buf.seek(0)
     return buf.getvalue()
 
-# ===================== FORMATAÇÃO + DESTAQUE (FRETE_TOTAL) =====================
+# ===================== FORMATAÇÃO/DISPLAY =====================
 def destacar_min_max(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     if df.empty:
         return df.style
@@ -288,16 +264,15 @@ def destacar_min_max(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
         min_idx = max_idx = None
 
     display_df = df.copy()
-    brl_cols = [c for c in ["FRETE_PESO", "FRETE_TOTAL"] if c in display_df.columns]
-    weight_cols = [c for c in ["PESO_INICIAL", "PESO_FINAL"] if c in display_df.columns]
-    percent_cols = [c for c in ["GRIS_ADVALOREM", "IMPOSTO"] if c in display_df.columns]
-
-    for c in brl_cols:
-        display_df[c] = display_df[c].map(brl)
-    for c in weight_cols:
-        display_df[c] = display_df[c].map(three_dec)
-    for c in percent_cols:
-        display_df[c] = display_df[c].map(pct)
+    for c in ["FRETE_PESO", "FRETE_TOTAL"]:
+        if c in display_df.columns:
+            display_df[c] = display_df[c].map(brl)
+    for c in ["PESO_INICIAL", "PESO_FINAL"]:
+        if c in display_df.columns:
+            display_df[c] = display_df[c].map(three_dec)
+    for c in ["GRIS_ADVALOREM", "IMPOSTO"]:
+        if c in display_df.columns:
+            display_df[c] = display_df[c].map(pct)
 
     def _row_style(row):
         if min_idx is not None and row.name == min_idx:
@@ -367,7 +342,7 @@ def show_results_single(df_display: pd.DataFrame):
         st.caption(f"Exibido sem destaque por falha de estilo: {e}")
 
 # ==========================================================
-# NORMALIZAÇÃO
+# NORMALIZAÇÃO / CÁLCULO
 # ==========================================================
 @st.cache_data(show_spinner=False)
 def normalizar_base_vtex(df_vtex: pd.DataFrame) -> pd.DataFrame:
@@ -470,7 +445,7 @@ def calcular_frete(df_vtex: pd.DataFrame, cep_destino: str, valor_nf: float, pes
 # INTERFACE STREAMLIT (tudo dentro de uma função)
 # ==========================================================
 def render_app():
-    with _show_errors_on_page():  # envolve a UI para exibir qualquer erro
+    with _show_errors_on_page():
         st.title("🚚 Simulador de Fretes VTEX")
 
         # Boot seguro: adia a consolidação até o usuário clicar
@@ -647,12 +622,11 @@ def render_app():
                     st.error(f"Erro ao ler o arquivo: {e}")
 
 # ==========================================================
-# CHAMADA GLOBAL — captura QUALQUER erro no boot e mostra stacktrace
+# CHAMADA GLOBAL — mostra stacktrace se algo falhar no boot
 # ==========================================================
 try:
     render_app()
 except Exception:
-    # Mostra na página e também escreve no stderr (aparece no log do Cloud)
     err_txt = "".join(traceback.format_exc())
     st.error("❌ Falha ao inicializar o aplicativo:")
     st.code(err_txt)
