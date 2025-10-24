@@ -560,7 +560,7 @@ else:
 
                     peso_linha = float(linha["PESO"]) if pd.notna(linha["PESO"]) else None
                     valor_nf_linha = float(linha["VALOR DE NFE"]) if pd.notna(linha["VALOR DE NFE"]) else None
-                    if peso_linha is None ou valor_nf_linha is None:
+                    if peso_linha is None or valor_nf_linha is None:
                         continue
 
                     df_matches = calcular_frete_vetor(base_norm, cep, peso_linha, transp_selecionadas)
