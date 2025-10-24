@@ -8,14 +8,14 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 from typing import Optional, List, Tuple  # compatível com 3.8/3.9
-from contextlib import contextmanager  # <<< (novo) para exibir erros na página
+from contextlib import contextmanager  # para exibir erros na página
 
 # ==========================================================
 # CONFIGURAÇÕES INICIAIS — tem que ser o PRIMEIRO st.* do app
 # ==========================================================
 st.set_page_config(page_title="Simulador de Fretes VTEX", layout="wide")
 
-# ── MOSTRAR ERROS NA TELA (mantém lógica, só ajuda debug) ─────────────────────
+# ── MOSTRAR ERROS NA TELA (mantém lógica, só ajuda debug)
 import sys, traceback
 st.set_option("client.showErrorDetails", True)
 
@@ -33,7 +33,6 @@ def _show_errors_on_page():
         st.error("❌ Erro de execução no app:")
         st.code("".join(traceback.format_exc()))
         st.stop()
-# ───────────────────────────────────────────────────────────────────────────────
 
 # Caminho da pasta das planilhas VTEX (submódulo git)
 PASTA_VTEX = "dados_vtex"
@@ -70,7 +69,7 @@ def _bootstrap_submodule() -> bool:
         st.error(f"Falha ao atualizar submódulo privado: {e}")
         return False
 
-_bootstrap_submodule()
+# (removido) _bootstrap_submodule() — agora é chamado somente dentro de carregar_base_rapida()
 
 # ==========================================================
 # FUNÇÕES AUXILIARES
@@ -210,6 +209,9 @@ def carregar_base_rapida(pasta: str) -> pd.DataFrame:
     Tenta ler a base já consolidada de um parquet em /tmp, usando o hash da pasta.
     Se não existir, consolida com carregar_planilhas_vtex(...), salva o parquet e retorna.
     """
+    # >>> bootstrap do submódulo SÓ aqui (após UI existir)
+    _bootstrap_submodule()
+    # <<<
     h = hash_arquivos(pasta)
     if not h:
         return pd.DataFrame()
@@ -505,7 +507,7 @@ def calcular_frete(df_vtex: pd.DataFrame, cep_destino: str, valor_nf: float, pes
 # ==========================================================
 # INTERFACE STREAMLIT
 # ==========================================================
-with _show_errors_on_page():  # <<< (novo) envolve a UI para exibir qualquer erro
+with _show_errors_on_page():  # envolve a UI para exibir qualquer erro
     st.title("🚚 Simulador de Fretes VTEX")
 
     # >>> boot seguro: adia a consolidação até o usuário clicar (evita health-check/EOF)
@@ -607,8 +609,11 @@ with _show_errors_on_page():  # <<< (novo) envolve a UI para exibir qualquer err
         if arquivo:
             try:
                 df_upload = pd.read_excel(arquivo)
+
+                # >>> AJUSTE: validação direta, sem acentos/locals()
                 colunas_obrigatorias = ["ORIGEM", "CEP DESTINO", "VALOR DE NFE", "PESO"]
                 faltantes = [c for c in colunas_obrigatorias if c not in df_upload.columns]
+                # <<<
 
                 if faltantes:
                     st.error(f"❌ Arquivo inválido. Faltam as colunas obrigatórias: {', '.join(faltantes)}")
