@@ -1,34 +1,54 @@
 import os
 import re
+import io
+import hashlib
+import subprocess
+import pathlib
 import pandas as pd
 import streamlit as st
-import hashlib
 from datetime import datetime
-from pathlib import Path
 from typing import Optional, List, Tuple  # compatível com 3.8/3.9
-import io  # <-- para download em memória
+
+# ==========================================================
+# CONFIGURAÇÕES INICIAIS — tem que ser o PRIMEIRO st.* do app
+# ==========================================================
+st.set_page_config(page_title="Simulador de Fretes VTEX", layout="wide")
+
+# ── MOSTRAR ERROS NA TELA (sem mudar a lógica do app) ──────────────────────────
+import sys, traceback
+st.set_option("client.showErrorDetails", True)
+def _streamlit_excepthook(exctype, value, tb):
+    st.error("❌ Erro não tratado — detalhes técnicos:")
+    st.code("".join(traceback.format_exception(exctype, value, tb)))
+sys.excepthook = _streamlit_excepthook
+# ───────────────────────────────────────────────────────────────────────────────
+
+# Caminho da pasta das planilhas VTEX (submódulo git)
+PASTA_VTEX = "dados_vtex"
+
+# Ocultar apenas na TELA (no Excel salvo continuará presente)
+HIDE_COLS_ON_SCREEN: List[str] = ["Arquivo_Origem", "Aba_Origem"]
 
 # ==========================================================
 # BOOTSTRAP PARA SUBMÓDULO PRIVADO (Streamlit Cloud)
 # ==========================================================
-# Lê a chave privada de st.secrets["SSH_PRIVATE_KEY"], cria ~/.ssh/id_planilhas
-# e executa "git submodule update --init --recursive" para baixar dados_vtex.
-import subprocess, pathlib
-
 @st.cache_resource(show_spinner=False)  # cacheia por sessão
-def _bootstrap_submodule():
+def _bootstrap_submodule() -> bool:
+    # Lê chave privada dos Secrets, grava em ~/.ssh e atualiza submódulo
     if "SSH_PRIVATE_KEY" not in st.secrets:
         st.warning("SSH_PRIVATE_KEY não configurada nos Secrets do Streamlit Cloud.")
         return False
     ssh_dir = pathlib.Path.home() / ".ssh"
     ssh_dir.mkdir(parents=True, exist_ok=True)
     key_path = ssh_dir / "id_planilhas"
+
     key_text = st.secrets["SSH_PRIVATE_KEY"]
     if not key_text.endswith("\n"):
         key_text += "\n"
     key_path.write_text(key_text)
     os.chmod(key_path, 0o600)
-    # usa essa chave e ignora verificação de host (evita interactive prompt)
+
+    # usa essa chave e ignora verificação de host (evita prompt interativo)
     os.environ["GIT_SSH_COMMAND"] = f"ssh -i {key_path} -o StrictHostKeyChecking=no"
     try:
         subprocess.run(["git", "submodule", "sync"], check=True)
@@ -39,21 +59,9 @@ def _bootstrap_submodule():
         return False
 
 _bootstrap_submodule()
-# ==========================================================
 
 # ==========================================================
-# CONFIGURAÇÕES INICIAIS
-# ==========================================================
-st.set_page_config(page_title="Simulador de Fretes VTEX", layout="wide")
-
-# Caminho da pasta das planilhas VTEX (AGORA LENDO O SUBMÓDULO)
-PASTA_VTEX = "dados_vtex"
-
-# Ocultar apenas na TELA (no Excel salvo continuará presente)
-HIDE_COLS_ON_SCREEN: List[str] = ["Arquivo_Origem", "Aba_Origem"]
-
-# ==========================================================
-# FUNÇÕES AUXILIARES (NOVAS + AS SUAS)
+# FUNÇÕES AUXILIARES
 # ==========================================================
 def _normalize_text(s: str) -> str:
     if s is None:
@@ -133,7 +141,7 @@ def hash_arquivos(pasta: str) -> str:
     return hash_md5.hexdigest()
 
 @st.cache_data(show_spinner=False)
-def carregar_planilhas_vtex(pasta, hash_pasta):
+def carregar_planilhas_vtex(pasta: str, hash_pasta: str) -> pd.DataFrame:
     try:
         # aceitar somente .xlsx (evita engine .xls no Cloud)
         arquivos_excel = [
@@ -181,13 +189,15 @@ def carregar_planilhas_vtex(pasta, hash_pasta):
     return pd.concat(dfs, ignore_index=True)
 
 def salvar_resultado(df_resultado: pd.DataFrame) -> str:
+    # No Cloud não existe Desktop; usar /tmp como fallback
     desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-    caminho = os.path.join(desktop, f"resultado_fretes_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
+    destino = desktop if os.path.isdir(desktop) else "/tmp"
+    caminho = os.path.join(destino, f"resultado_fretes_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
     df_resultado.to_excel(caminho, index=False)
     return caminho
 
-# versão em memória para usar no Streamlit Cloud
 def salvar_resultado_para_download(df_resultado: pd.DataFrame) -> bytes:
+    # Download direto no navegador (Cloud-friendly)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df_resultado.to_excel(writer, index=False)
@@ -269,7 +279,6 @@ def show_results_plain(df_display: pd.DataFrame):
         st.dataframe(df_display, use_container_width=True)
         return
 
-    # Copia para exibição
     df_view = df_display.copy()
     if "POLYGON" in df_view.columns:
         df_view = df_view.rename(columns={"POLYGON": "Cidade/UF"})
@@ -297,7 +306,6 @@ def show_results_plain(df_display: pd.DataFrame):
         except Exception:
             return x
 
-    # Aplica formatação como texto
     if "FRETE_PESO" in df_view.columns:
         df_view["FRETE_PESO"] = df_view["FRETE_PESO"].map(brl)
     if "FRETE_TOTAL" in df_view.columns:
@@ -333,7 +341,6 @@ def show_results_single(df_display: pd.DataFrame):
         html = styler.to_html()
         st.markdown(html, unsafe_allow_html=True)
     except Exception as e:
-        # fallback seguro: mostra sem destaque
         st.dataframe(df_view, use_container_width=True)
         st.caption(f"Exibido sem destaque por falha de estilo: {e}")
 
@@ -405,7 +412,7 @@ def calcular_frete_vetor(base_norm: pd.DataFrame, cep: int, peso_kg: float,
     return df.loc[m].copy()
 
 # ==========================================================
-# CÁLCULO DE FRETE (SEU ORIGINAL PARA UNITÁRIO)
+# CÁLCULO DE FRETE (UNITÁRIO)
 # ==========================================================
 def calcular_frete(df_vtex: pd.DataFrame, cep_destino: str, valor_nf: float, peso: float,
                    transportadora: Optional[str] = None) -> pd.DataFrame:
@@ -455,7 +462,7 @@ def calcular_frete(df_vtex: pd.DataFrame, cep_destino: str, valor_nf: float, pes
     return saida
 
 # ==========================================================
-# INTERFACE STREAMLIT (SEU FLUXO ORIGINAL + MULTISELECT + UF/POLYGON)
+# INTERFACE STREAMLIT
 # ==========================================================
 st.title("🚚 Simulador de Fretes VTEX")
 
@@ -473,9 +480,7 @@ base_norm = normalizar_base_vtex(df_vtex)
 
 modo = st.radio("Selecione o modo de simulação:", ["Consulta unitária", "Upload em Excel"])
 
-# ==========================================================
-# CONSULTA UNITÁRIA
-# ==========================================================
+# -------------------- Consulta Unitária --------------------
 if modo == "Consulta unitária":
     st.subheader("Simulação Unitária")
 
@@ -520,16 +525,13 @@ if modo == "Consulta unitária":
             if resultado is not None and not resultado.empty:
                 resultado_display = resultado.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
                 st.success(f"✅ {len(resultado_display)} opções encontradas.")
-                # Único grid (formatação + destaque) e POLYGON -> Cidade/UF
                 show_results_single(resultado_display)
             else:
                 st.warning("Nenhum resultado encontrado para os filtros informados.")
         else:
             st.error("Por favor, preencha todos os campos para simular.")
 
-# ==========================================================
-# UPLOAD DE EXCEL (linha a linha, com POLYGON e UF no resultado)
-# ==========================================================
+# -------------------- Upload Excel --------------------
 else:
     st.subheader("📤 Upload de Arquivo Excel")
     st.info("**Principais colunas (nomes exatos):** `ORIGEM`, `CEP DESTINO`, `VALOR DE NFE`, `PESO`.")
@@ -587,8 +589,8 @@ else:
                     parcial["PESO_INICIAL"] = parcial["KG_INI"]
                     parcial["PESO_FINAL"] = parcial["KG_FIM"]
                     parcial["FRETE_PESO"] = frete_peso
-                    parcial["GRIS_ADVALOREM"] = gris_percent    # (%)
-                    parcial["IMPOSTO"] = perc_imp               # (%)
+                    parcial["GRIS_ADVALOREM"] = gris_percent
+                    parcial["IMPOSTO"] = perc_imp
                     parcial["FRETE_TOTAL"] = valor_total
                     parcial["UF_DESTINO"] = uf
                     parcial["ORIGEM"] = linha["ORIGEM"]
@@ -607,7 +609,7 @@ else:
                 if resultados:
                     df_final = pd.concat(resultados, ignore_index=True)
 
-                    # mantém sua gravação local (para uso desktop)
+                    # grava em Desktop (se existir) ou /tmp (Cloud)
                     caminho = salvar_resultado(df_final)
                     st.success(f"✅ Simulações concluídas. Resultado salvo em:\n{caminho}")
 
@@ -621,7 +623,6 @@ else:
                     )
 
                     df_final_display = df_final.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
-                    # Upload: sem destaque (apenas formatação) e POLYGON -> Cidade/UF
                     show_results_plain(df_final_display.head(50))
                 else:
                     st.warning("Nenhum resultado encontrado para as linhas enviadas.")
