@@ -327,8 +327,15 @@ def show_results_single(df_display: pd.DataFrame):
     if "POLYGON" in df_view.columns:
         df_view = df_view.rename(columns={"POLYGON": "Cidade/UF"})
 
-    # destacar_min_max retorna um Styler -> usar st.table para evitar crash no Cloud
-    st.table(destacar_min_max(df_view))
+    # Renderização robusta: Styler -> HTML (evita crash no Cloud)
+    try:
+        styler = destacar_min_max(df_view)  # retorna Styler
+        html = styler.to_html()
+        st.markdown(html, unsafe_allow_html=True)
+    except Exception as e:
+        # fallback seguro: mostra sem destaque
+        st.dataframe(df_view, use_container_width=True)
+        st.caption(f"Exibido sem destaque por falha de estilo: {e}")
 
 # ==========================================================
 # NORMALIZAÇÃO DA BASE (KG) – mantém PolygonName
