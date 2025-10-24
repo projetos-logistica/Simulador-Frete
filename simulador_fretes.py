@@ -8,19 +8,31 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 from typing import Optional, List, Tuple  # compatível com 3.8/3.9
+from contextlib import contextmanager  # <<< (novo) para exibir erros na página
 
 # ==========================================================
 # CONFIGURAÇÕES INICIAIS — tem que ser o PRIMEIRO st.* do app
 # ==========================================================
 st.set_page_config(page_title="Simulador de Fretes VTEX", layout="wide")
 
-# ── MOSTRAR ERROS NA TELA (sem mudar a lógica do app) ──────────────────────────
+# ── MOSTRAR ERROS NA TELA (mantém lógica, só ajuda debug) ─────────────────────
 import sys, traceback
 st.set_option("client.showErrorDetails", True)
+
 def _streamlit_excepthook(exctype, value, tb):
     st.error("❌ Erro não tratado — detalhes técnicos:")
     st.code("".join(traceback.format_exception(exctype, value, tb)))
 sys.excepthook = _streamlit_excepthook
+
+@contextmanager
+def _show_errors_on_page():
+    """Mostra qualquer exceção da UI diretamente na página (evita 'Oh no')."""
+    try:
+        yield
+    except Exception:
+        st.error("❌ Erro de execução no app:")
+        st.code("".join(traceback.format_exc()))
+        st.stop()
 # ───────────────────────────────────────────────────────────────────────────────
 
 # Caminho da pasta das planilhas VTEX (submódulo git)
@@ -493,185 +505,186 @@ def calcular_frete(df_vtex: pd.DataFrame, cep_destino: str, valor_nf: float, pes
 # ==========================================================
 # INTERFACE STREAMLIT
 # ==========================================================
-st.title("🚚 Simulador de Fretes VTEX")
+with _show_errors_on_page():  # <<< (novo) envolve a UI para exibir qualquer erro
+    st.title("🚚 Simulador de Fretes VTEX")
 
-# >>> boot seguro: adia a consolidação até o usuário clicar (evita health-check/EOF)
-st.info("🧩 Clique em **Inicializar base** para consolidar as planilhas VTEX e gerar o cache. "
-        "Isso é feito só na primeira execução do servidor.")
+    # >>> boot seguro: adia a consolidação até o usuário clicar (evita health-check/EOF)
+    st.info("🧩 Clique em **Inicializar base** para consolidar as planilhas VTEX e gerar o cache. "
+            "Isso é feito só na primeira execução do servidor.")
 
-if "base_ok" not in st.session_state:
-    st.session_state.base_ok = False
+    if "base_ok" not in st.session_state:
+        st.session_state.base_ok = False
 
-col_a, col_b = st.columns([1, 3])
-with col_a:
-    iniciar = st.button("⚙️ Inicializar base", type="primary")
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        iniciar = st.button("⚙️ Inicializar base", type="primary")
 
-if iniciar:
-    with st.spinner("Consolidando planilhas e gerando cache..."):
-        df_vtex_tmp = carregar_base_rapida(PASTA_VTEX)
-        if df_vtex_tmp.empty:
-            st.error("❌ Nenhuma planilha VTEX encontrada na pasta configurada.")
-            st.stop()
-        st.session_state.base_ok = True
-        st.success("✅ Base consolidada e cache gerado. Pode usar o simulador abaixo.")
+    if iniciar:
+        with st.spinner("Consolidando planilhas e gerando cache..."):
+            df_vtex_tmp = carregar_base_rapida(PASTA_VTEX)
+            if df_vtex_tmp.empty:
+                st.error("❌ Nenhuma planilha VTEX encontrada na pasta configurada.")
+                st.stop()
+            st.session_state.base_ok = True
+            st.success("✅ Base consolidada e cache gerado. Pode usar o simulador abaixo.")
 
-if not st.session_state.base_ok:
-    st.stop()
+    if not st.session_state.base_ok:
+        st.stop()
 
-# Após o clique, a base já existe (ou veio do cache) — segue o fluxo normal:
-df_vtex = carregar_base_rapida(PASTA_VTEX)
-# <<< fim do boot seguro
+    # Após o clique, a base já existe (ou veio do cache) — segue o fluxo normal:
+    df_vtex = carregar_base_rapida(PASTA_VTEX)
+    # <<< fim do boot seguro
 
-base_norm = normalizar_base_vtex(df_vtex)
+    base_norm = normalizar_base_vtex(df_vtex)
 
-modo = st.radio("Selecione o modo de simulação:", ["Consulta unitária", "Upload em Excel"])
+    modo = st.radio("Selecione o modo de simulação:", ["Consulta unitária", "Upload em Excel"])
 
-# -------------------- Consulta Unitária --------------------
-if modo == "Consulta unitária":
-    st.subheader("Simulação Unitária")
+    # -------------------- Consulta Unitária --------------------
+    if modo == "Consulta unitária":
+        st.subheader("Simulação Unitária")
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        cep_destino = st.text_input("CEP Destino", "")
-    with col2:
-        valor_nf = st.number_input("Valor da Nota Fiscal (R$)", min_value=0.0, step=10.0)
-    with col3:
-        peso = st.number_input("Peso (kg)", min_value=0.0, step=0.1)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            cep_destino = st.text_input("CEP Destino", "")
+        with col2:
+            valor_nf = st.number_input("Valor da Nota Fiscal (R$)", min_value=0.0, step=10.0)
+        with col3:
+            peso = st.number_input("Peso (kg)", min_value=0.0, step=0.1)
 
-    if "Transportadora" in df_vtex.columns:
-        transportadoras_lista = sorted(df_vtex["Transportadora"].dropna().unique().tolist())
-    else:
-        transportadoras_lista = []
-    opcoes_transp = ["Todas"] + transportadoras_lista
-    transp_selecionadas = st.multiselect("Transportadoras", options=opcoes_transp, default=["Todas"])
-
-    if st.button("Calcular Frete"):
-        if cep_destino and valor_nf > 0 and peso > 0:
-            resultado = calcular_frete(df_vtex, cep_destino, valor_nf, peso, transportadora=None)
-
-            # Mostrar UF + cidade (Polygon)
-            cep_dig = re.sub(r"\D", "", str(cep_destino))
-            if cep_dig.isdigit():
-                uf, _ = buscar_uf_cep(int(cep_dig))
-            else:
-                uf = ""
-            if resultado is not None and not resultado.empty and "POLYGON" in resultado.columns:
-                try:
-                    cidade = resultado["POLYGON"].mode().iloc[0]
-                except Exception:
-                    cidade = resultado["POLYGON"].iloc[0]
-            else:
-                cidade = "N/D"
-            st.info(f"**Destino:** {cidade} — **UF:** {uf}")
-
-            if resultado is not None and not resultado.empty:
-                if transp_selecionadas and "Todas" not in transp_selecionadas and "Transportadora" in resultado.columns:
-                    resultado = resultado[resultado["Transportadora"].isin(transp_selecionadas)]
-
-            if resultado is not None and not resultado.empty:
-                resultado_display = resultado.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
-                st.success(f"✅ {len(resultado_display)} opções encontradas.")
-                show_results_single(resultado_display)
-            else:
-                st.warning("Nenhum resultado encontrado para os filtros informados.")
+        if "Transportadora" in df_vtex.columns:
+            transportadoras_lista = sorted(df_vtex["Transportadora"].dropna().unique().tolist())
         else:
-            st.error("Por favor, preencha todos os campos para simular.")
+            transportadoras_lista = []
+        opcoes_transp = ["Todas"] + transportadoras_lista
+        transp_selecionadas = st.multiselect("Transportadoras", options=opcoes_transp, default=["Todas"])
 
-# -------------------- Upload Excel --------------------
-else:
-    st.subheader("📤 Upload de Arquivo Excel")
-    st.info("**Principais colunas (nomes exatos):** `ORIGEM`, `CEP DESTINO`, `VALOR DE NFE`, `PESO`.")
+        if st.button("Calcular Frete"):
+            if cep_destino and valor_nf > 0 and peso > 0:
+                resultado = calcular_frete(df_vtex, cep_destino, valor_nf, peso, transportadora=None)
 
-    if "Transportadora" in df_vtex.columns:
-        transportadoras_lista = sorted(df_vtex["Transportadora"].dropna().unique().tolist())
-    else:
-        transportadoras_lista = []
-    opcoes_transp = ["Todas"] + transportadoras_lista
-    transp_selecionadas = st.multiselect("Transportadoras (aplicado ao lote)", options=opcoes_transp, default=["Todas"])
-
-    arquivo = st.file_uploader("Selecione um arquivo (.xlsx ou .xls)", type=["xlsx", "xls"])
-
-    if arquivo:
-        try:
-            df_upload = pd.read_excel(arquivo)
-            colunas_obrigatorias = ["ORIGEM", "CEP DESTINO", "VALOR DE NFE", "PESO"]
-            faltantes = [c for c in colunas_obrigatorias if c not in df_upload.columns]
-
-            if faltantes:
-                st.error(f"❌ Arquivo inválido. Faltam as colunas obrigatórias: {', '.join(faltantes)}")
-            else:
-                st.success("✅ Arquivo válido. Processando simulações...")
-                resultados = []
-
-                for _, linha in df_upload.iterrows():
-                    cep_txt = str(linha["CEP DESTINO"])
-                    cep_dig = re.sub(r"\D", "", cep_txt)
-                    if not cep_dig.isdigit():
-                        continue
-                    cep = int(cep_dig)
-
-                    peso_linha = float(linha["PESO"]) if pd.notna(linha["PESO"]) else None
-                    valor_nf_linha = float(linha["VALOR DE NFE"]) if pd.notna(linha["VALOR DE NFE"]) else None
-                    if (peso_linha is None) or (valor_nf_linha is None):
-                        continue
-
-                    df_matches = calcular_frete_vetor(base_norm, cep, peso_linha, transp_selecionadas)
-                    if df_matches.empty:
-                        continue
-
-                    excesso = (peso_linha - df_matches["KG_FIM"]).clip(lower=0)
-                    frete_peso = df_matches["ABS_COST"] + excesso * df_matches["EXTRA_PER_KG"]
-
-                    gris_percent = df_matches["PRICE_PERCENT"].fillna(0.5)
-                    uf, perc_imp = buscar_uf_cep(cep)
-
-                    gris_valor = (gris_percent / 100.0) * valor_nf_linha
-                    sub_total = frete_peso + gris_valor
-                    fator = 1.0 - (perc_imp / 100.0)
-                    if fator <= 0: fator = 1.0
-                    valor_total = sub_total / fator
-
-                    parcial = df_matches.copy()
-                    parcial["PESO_INICIAL"] = parcial["KG_INI"]
-                    parcial["PESO_FINAL"] = parcial["KG_FIM"]
-                    parcial["FRETE_PESO"] = frete_peso
-                    parcial["GRIS_ADVALOREM"] = gris_percent
-                    parcial["IMPOSTO"] = perc_imp
-                    parcial["FRETE_TOTAL"] = valor_total
-                    parcial["UF_DESTINO"] = uf
-                    parcial["ORIGEM"] = linha["ORIGEM"]
-                    parcial["CEP_DESTINO_ORIGINAL"] = cep
-                    parcial["VALOR_NFE_ORIGINAL"] = valor_nf_linha
-                    parcial["PESO_ORIGINAL"] = peso_linha
-
-                    resultados.append(parcial[[
-                        "Transportadora", "CEP_INICIAL", "CEP_FINAL", "PESO_INICIAL", "PESO_FINAL",
-                        "FRETE_PESO", "GRIS_ADVALOREM", "IMPOSTO", "FRETE_TOTAL", "PRAZO_ENTREGA",
-                        "POLYGON", "UF_DESTINO",
-                        "Arquivo_Origem", "Aba_Origem", "ORIGEM", "CEP_DESTINO_ORIGINAL",
-                        "VALOR_NFE_ORIGINAL", "PESO_ORIGINAL"
-                    ]])
-
-                if resultados:
-                    df_final = pd.concat(resultados, ignore_index=True)
-
-                    # grava em Desktop (se existir) ou /tmp (Cloud)
-                    caminho = salvar_resultado(df_final)
-                    st.success(f"✅ Simulações concluídas. Resultado salvo em:\n{caminho}")
-
-                    # botão para baixar no Cloud
-                    payload = salvar_resultado_para_download(df_final)
-                    st.download_button(
-                        "⬇️ Baixar resultado (Excel)",
-                        data=payload,
-                        file_name=f"resultado_fretes_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-
-                    df_final_display = df_final.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
-                    # Upload: sem destaque (apenas formatação) e POLYGON -> Cidade/UF
-                    show_results_plain(df_final_display.head(50))
+                # Mostrar UF + cidade (Polygon)
+                cep_dig = re.sub(r"\D", "", str(cep_destino))
+                if cep_dig.isdigit():
+                    uf, _ = buscar_uf_cep(int(cep_dig))
                 else:
-                    st.warning("Nenhum resultado encontrado para as linhas enviadas.")
-        except Exception as e:
-            st.error(f"Erro ao ler o arquivo: {e}")
+                    uf = ""
+                if resultado is not None and not resultado.empty and "POLYGON" in resultado.columns:
+                    try:
+                        cidade = resultado["POLYGON"].mode().iloc[0]
+                    except Exception:
+                        cidade = resultado["POLYGON"].iloc[0]
+                else:
+                    cidade = "N/D"
+                st.info(f"**Destino:** {cidade} — **UF:** {uf}")
+
+                if resultado is not None and not resultado.empty:
+                    if transp_selecionadas and "Todas" not in transp_selecionadas and "Transportadora" in resultado.columns:
+                        resultado = resultado[resultado["Transportadora"].isin(transp_selecionadas)]
+
+                if resultado is not None and not resultado.empty:
+                    resultado_display = resultado.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
+                    st.success(f"✅ {len(resultado_display)} opções encontradas.")
+                    show_results_single(resultado_display)
+                else:
+                    st.warning("Nenhum resultado encontrado para os filtros informados.")
+            else:
+                st.error("Por favor, preencha todos os campos para simular.")
+
+    # -------------------- Upload Excel --------------------
+    else:
+        st.subheader("📤 Upload de Arquivo Excel")
+        st.info("**Principais colunas (nomes exatos):** `ORIGEM`, `CEP DESTINO`, `VALOR DE NFE`, `PESO`.")
+
+        if "Transportadora" in df_vtex.columns:
+            transportadoras_lista = sorted(df_vtex["Transportadora"].dropna().unique().tolist())
+        else:
+            transportadoras_lista = []
+        opcoes_transp = ["Todas"] + transportadoras_lista
+        transp_selecionadas = st.multiselect("Transportadoras (aplicado ao lote)", options=opcoes_transp, default=["Todas"])
+
+        arquivo = st.file_uploader("Selecione um arquivo (.xlsx ou .xls)", type=["xlsx", "xls"])
+
+        if arquivo:
+            try:
+                df_upload = pd.read_excel(arquivo)
+                colunas_obrigatorias = ["ORIGEM", "CEP DESTINO", "VALOR DE NFE", "PESO"]
+                faltantes = [c for c in colunas_obrigatorias if c not in df_upload.columns]
+
+                if faltantes:
+                    st.error(f"❌ Arquivo inválido. Faltam as colunas obrigatórias: {', '.join(faltantes)}")
+                else:
+                    st.success("✅ Arquivo válido. Processando simulações...")
+                    resultados = []
+
+                    for _, linha in df_upload.iterrows():
+                        cep_txt = str(linha["CEP DESTINO"])
+                        cep_dig = re.sub(r"\D", "", cep_txt)
+                        if not cep_dig.isdigit():
+                            continue
+                        cep = int(cep_dig)
+
+                        peso_linha = float(linha["PESO"]) if pd.notna(linha["PESO"]) else None
+                        valor_nf_linha = float(linha["VALOR DE NFE"]) if pd.notna(linha["VALOR DE NFE"]) else None
+                        if (peso_linha is None) or (valor_nf_linha is None):
+                            continue
+
+                        df_matches = calcular_frete_vetor(base_norm, cep, peso_linha, transp_selecionadas)
+                        if df_matches.empty:
+                            continue
+
+                        excesso = (peso_linha - df_matches["KG_FIM"]).clip(lower=0)
+                        frete_peso = df_matches["ABS_COST"] + excesso * df_matches["EXTRA_PER_KG"]
+
+                        gris_percent = df_matches["PRICE_PERCENT"].fillna(0.5)
+                        uf, perc_imp = buscar_uf_cep(cep)
+
+                        gris_valor = (gris_percent / 100.0) * valor_nf_linha
+                        sub_total = frete_peso + gris_valor
+                        fator = 1.0 - (perc_imp / 100.0)
+                        if fator <= 0: fator = 1.0
+                        valor_total = sub_total / fator
+
+                        parcial = df_matches.copy()
+                        parcial["PESO_INICIAL"] = parcial["KG_INI"]
+                        parcial["PESO_FINAL"] = parcial["KG_FIM"]
+                        parcial["FRETE_PESO"] = frete_peso
+                        parcial["GRIS_ADVALOREM"] = gris_percent
+                        parcial["IMPOSTO"] = perc_imp
+                        parcial["FRETE_TOTAL"] = valor_total
+                        parcial["UF_DESTINO"] = uf
+                        parcial["ORIGEM"] = linha["ORIGEM"]
+                        parcial["CEP_DESTINO_ORIGINAL"] = cep
+                        parcial["VALOR_NFE_ORIGINAL"] = valor_nf_linha
+                        parcial["PESO_ORIGINAL"] = peso_linha
+
+                        resultados.append(parcial[[
+                            "Transportadora", "CEP_INICIAL", "CEP_FINAL", "PESO_INICIAL", "PESO_FINAL",
+                            "FRETE_PESO", "GRIS_ADVALOREM", "IMPOSTO", "FRETE_TOTAL", "PRAZO_ENTREGA",
+                            "POLYGON", "UF_DESTINO",
+                            "Arquivo_Origem", "Aba_Origem", "ORIGEM", "CEP_DESTINO_ORIGINAL",
+                            "VALOR_NFE_ORIGINAL", "PESO_ORIGINAL"
+                        ]])
+
+                    if resultados:
+                        df_final = pd.concat(resultados, ignore_index=True)
+
+                        # grava em Desktop (se existir) ou /tmp (Cloud)
+                        caminho = salvar_resultado(df_final)
+                        st.success(f"✅ Simulações concluídas. Resultado salvo em:\n{caminho}")
+
+                        # botão para baixar no Cloud
+                        payload = salvar_resultado_para_download(df_final)
+                        st.download_button(
+                            "⬇️ Baixar resultado (Excel)",
+                            data=payload,
+                            file_name=f"resultado_fretes_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+
+                        df_final_display = df_final.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
+                        # Upload: sem destaque (apenas formatação) e POLYGON -> Cidade/UF
+                        show_results_plain(df_final_display.head(50))
+                    else:
+                        st.warning("Nenhum resultado encontrado para as linhas enviadas.")
+            except Exception as e:
+                st.error(f"Erro ao ler o arquivo: {e}")
