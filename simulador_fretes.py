@@ -6,7 +6,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple  # compatível com 3.8/3.9
-import io  # <-- ADICIONADO para download em memória
+import io  # <-- para download em memória
 
 # ==========================================================
 # BOOTSTRAP PARA SUBMÓDULO PRIVADO (Streamlit Cloud)
@@ -15,7 +15,7 @@ import io  # <-- ADICIONADO para download em memória
 # e executa "git submodule update --init --recursive" para baixar dados_vtex.
 import subprocess, pathlib
 
-@st.cache_resource(show_spinner=False)  # <-- ADICIONADO: cacheia por sessão
+@st.cache_resource(show_spinner=False)  # cacheia por sessão
 def _bootstrap_submodule():
     if "SSH_PRIVATE_KEY" not in st.secrets:
         st.warning("SSH_PRIVATE_KEY não configurada nos Secrets do Streamlit Cloud.")
@@ -135,7 +135,7 @@ def hash_arquivos(pasta: str) -> str:
 @st.cache_data(show_spinner=False)
 def carregar_planilhas_vtex(pasta, hash_pasta):
     try:
-        # *** AJUSTE: aceitar somente .xlsx (evita engine .xls no Cloud) ***
+        # aceitar somente .xlsx (evita engine .xls no Cloud)
         arquivos_excel = [
             f for f in os.listdir(pasta)
             if not f.startswith("~$") and f.lower().endswith(".xlsx") and "VTEX" in f.upper()
@@ -186,7 +186,7 @@ def salvar_resultado(df_resultado: pd.DataFrame) -> str:
     df_resultado.to_excel(caminho, index=False)
     return caminho
 
-# *** ADICIONADO: versão em memória para usar no Streamlit Cloud ***
+# versão em memória para usar no Streamlit Cloud
 def salvar_resultado_para_download(df_resultado: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
@@ -327,7 +327,8 @@ def show_results_single(df_display: pd.DataFrame):
     if "POLYGON" in df_view.columns:
         df_view = df_view.rename(columns={"POLYGON": "Cidade/UF"})
 
-    st.dataframe(destacar_min_max(df_view), use_container_width=True)
+    # destacar_min_max retorna um Styler -> usar st.table para evitar crash no Cloud
+    st.table(destacar_min_max(df_view))
 
 # ==========================================================
 # NORMALIZAÇÃO DA BASE (KG) – mantém PolygonName
@@ -603,7 +604,7 @@ else:
                     caminho = salvar_resultado(df_final)
                     st.success(f"✅ Simulações concluídas. Resultado salvo em:\n{caminho}")
 
-                    # *** ADICIONADO: botão para baixar no Cloud ***
+                    # botão para baixar no Cloud
                     payload = salvar_resultado_para_download(df_final)
                     st.download_button(
                         "⬇️ Baixar resultado (Excel)",
@@ -613,9 +614,8 @@ else:
                     )
 
                     df_final_display = df_final.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
-                    # >>> Upload: sem destaque (apenas formatação) e POLYGON -> Cidade/UF
+                    # Upload: sem destaque (apenas formatação) e POLYGON -> Cidade/UF
                     show_results_plain(df_final_display.head(50))
-                    # <<<
                 else:
                     st.warning("Nenhum resultado encontrado para as linhas enviadas.")
         except Exception as e:
