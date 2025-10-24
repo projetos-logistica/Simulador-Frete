@@ -233,9 +233,17 @@ def salvar_resultado_para_download(df_resultado: pd.DataFrame) -> bytes:
 
 # ===================== FORMATAÇÃO + DESTAQUE (FRETE_TOTAL) =====================
 def destacar_min_max(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
+    """
+    Destaca menor (verde) e maior (vermelho) FRETE_TOTAL e
+    força a exibição com os formatos solicitados:
+      - R$ com 2 casas: FRETE_PESO, FRETE_TOTAL
+      - 3 casas sem R$: PESO_INICIAL, PESO_FINAL
+      - % com 2 casas: GRIS_ADVALOREM, IMPOSTO
+    """
     if df.empty:
         return df.style
 
+    # --- formatadores ---
     def brl(x):
         try:
             if pd.isna(x): return ""
@@ -258,41 +266,52 @@ def destacar_min_max(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
         except Exception:
             return x
 
+    # min/max antes de formatar
     try:
         min_idx = df["FRETE_TOTAL"].idxmin() if "FRETE_TOTAL" in df.columns else None
         max_idx = df["FRETE_TOTAL"].idxmax() if "FRETE_TOTAL" in df.columns else None
     except Exception:
         min_idx = max_idx = None
 
+    # cópia para exibição (strings já formatadas)
     display_df = df.copy()
+
     brl_cols = [c for c in ["FRETE_PESO", "FRETE_TOTAL"] if c in display_df.columns]
     weight_cols = [c for c in ["PESO_INICIAL", "PESO_FINAL"] if c in display_df.columns]
     percent_cols = [c for c in ["GRIS_ADVALOREM", "IMPOSTO"] if c in display_df.columns]
+
     for c in brl_cols:
         display_df[c] = display_df[c].map(brl)
     for c in weight_cols:
-        display_df[c] = display_df[c].map(three_dec)
+        display_df[c] = display_df[c].map(three_dec)   # 3 casas decimais
     for c in percent_cols:
         display_df[c] = display_df[c].map(pct)
 
     def _row_style(row):
         if min_idx is not None and row.name == min_idx:
-            return ["background-color: #d1fae5"] * len(row)
+            return ["background-color: #d1fae5"] * len(row)  # verde
         if max_idx is not None and row.name == max_idx:
-            return ["background-color: #fee2e2"] * len(row)
+            return ["background-color: #fee2e2"] * len(row)  # vermelho
         return [""] * len(row)
 
     return display_df.style.apply(_row_style, axis=1)
 
 # ============== Tabela SEM destaque (para o modo Upload) ==============
 def show_results_plain(df_display: pd.DataFrame):
+    """
+    Tabela SEM destaque (sem verde/vermelho), mas com as mesmas
+    formatações: R$, %, e 3 casas nos pesos. Também renomeia POLYGON -> Cidade/UF.
+    """
     if df_display.empty:
         st.dataframe(df_display, use_container_width=True)
         return
+
+    # Copia para exibição
     df_view = df_display.copy()
     if "POLYGON" in df_view.columns:
         df_view = df_view.rename(columns={"POLYGON": "Cidade/UF"})
 
+    # --- formatadores iguais aos do destacar_min_max ---
     def brl(x):
         try:
             if pd.isna(x): return ""
@@ -315,6 +334,7 @@ def show_results_plain(df_display: pd.DataFrame):
         except Exception:
             return x
 
+    # Aplica formatação como texto
     if "FRETE_PESO" in df_view.columns:
         df_view["FRETE_PESO"] = df_view["FRETE_PESO"].map(brl)
     if "FRETE_TOTAL" in df_view.columns:
@@ -330,14 +350,23 @@ def show_results_plain(df_display: pd.DataFrame):
 
 # ===================== ÚNICO RESULTADO (com destaque) =====================
 def show_results_single(df_display: pd.DataFrame):
+    """
+    Única tabela com:
+      - destaque verde/vermelho (menor/maior FRETE_TOTAL)
+      - formatação R$ / % / 3 casas nos pesos
+      - cabeçalho 'Cidade/UF' no lugar de 'POLYGON'
+    """
     if df_display.empty:
         st.dataframe(df_display, use_container_width=True)
         return
+
     df_view = df_display.copy()
     if "POLYGON" in df_view.columns:
         df_view = df_view.rename(columns={"POLYGON": "Cidade/UF"})
+
+    # Renderização robusta: Styler -> HTML (evita crash no Cloud)
     try:
-        styler = destacar_min_max(df_view)
+        styler = destacar_min_max(df_view)  # retorna Styler
         html = styler.to_html()
         st.markdown(html, unsafe_allow_html=True)
     except Exception as e:
@@ -434,9 +463,11 @@ def calcular_frete(df_vtex: pd.DataFrame, cep_destino: str, valor_nf: float, pes
     excesso = (float(peso) - df_filtrado["KG_FIM"]).clip(lower=0)
     frete_peso = df_filtrado["ABS_COST"] + excesso * df_filtrado["EXTRA_PER_KG"]
 
+    # Percentuais
     gris_percent = df_filtrado["PRICE_PERCENT"].fillna(0.5)  # %
     uf, perc_imp = buscar_uf_cep(cep_num)                    # %
 
+    # Cálculo financeiro
     gris_valor = (gris_percent / 100.0) * float(valor_nf)
     sub_total = frete_peso + gris_valor
     fator = 1.0 - (perc_imp / 100.0)
@@ -464,12 +495,32 @@ def calcular_frete(df_vtex: pd.DataFrame, cep_destino: str, valor_nf: float, pes
 # ==========================================================
 st.title("🚚 Simulador de Fretes VTEX")
 
-# >>> replace: usa cache parquet para evitar 503 no cold start
-df_vtex = carregar_base_rapida(PASTA_VTEX)
-if df_vtex.empty:
-    st.error("❌ Nenhuma planilha VTEX encontrada na pasta configurada.")
+# >>> boot seguro: adia a consolidação até o usuário clicar (evita health-check/EOF)
+st.info("🧩 Clique em **Inicializar base** para consolidar as planilhas VTEX e gerar o cache. "
+        "Isso é feito só na primeira execução do servidor.")
+
+if "base_ok" not in st.session_state:
+    st.session_state.base_ok = False
+
+col_a, col_b = st.columns([1, 3])
+with col_a:
+    iniciar = st.button("⚙️ Inicializar base", type="primary")
+
+if iniciar:
+    with st.spinner("Consolidando planilhas e gerando cache..."):
+        df_vtex_tmp = carregar_base_rapida(PASTA_VTEX)
+        if df_vtex_tmp.empty:
+            st.error("❌ Nenhuma planilha VTEX encontrada na pasta configurada.")
+            st.stop()
+        st.session_state.base_ok = True
+        st.success("✅ Base consolidada e cache gerado. Pode usar o simulador abaixo.")
+
+if not st.session_state.base_ok:
     st.stop()
-# <<<
+
+# Após o clique, a base já existe (ou veio do cache) — segue o fluxo normal:
+df_vtex = carregar_base_rapida(PASTA_VTEX)
+# <<< fim do boot seguro
 
 base_norm = normalizar_base_vtex(df_vtex)
 
@@ -498,6 +549,7 @@ if modo == "Consulta unitária":
         if cep_destino and valor_nf > 0 and peso > 0:
             resultado = calcular_frete(df_vtex, cep_destino, valor_nf, peso, transportadora=None)
 
+            # Mostrar UF + cidade (Polygon)
             cep_dig = re.sub(r"\D", "", str(cep_destino))
             if cep_dig.isdigit():
                 uf, _ = buscar_uf_cep(int(cep_dig))
@@ -560,7 +612,7 @@ else:
 
                     peso_linha = float(linha["PESO"]) if pd.notna(linha["PESO"]) else None
                     valor_nf_linha = float(linha["VALOR DE NFE"]) if pd.notna(linha["VALOR DE NFE"]) else None
-                    if peso_linha is None or valor_nf_linha is None:
+                    if (peso_linha is None) or (valor_nf_linha is None):
                         continue
 
                     df_matches = calcular_frete_vetor(base_norm, cep, peso_linha, transp_selecionadas)
@@ -603,9 +655,11 @@ else:
                 if resultados:
                     df_final = pd.concat(resultados, ignore_index=True)
 
+                    # grava em Desktop (se existir) ou /tmp (Cloud)
                     caminho = salvar_resultado(df_final)
                     st.success(f"✅ Simulações concluídas. Resultado salvo em:\n{caminho}")
 
+                    # botão para baixar no Cloud
                     payload = salvar_resultado_para_download(df_final)
                     st.download_button(
                         "⬇️ Baixar resultado (Excel)",
@@ -615,6 +669,7 @@ else:
                     )
 
                     df_final_display = df_final.drop(columns=HIDE_COLS_ON_SCREEN, errors="ignore")
+                    # Upload: sem destaque (apenas formatação) e POLYGON -> Cidade/UF
                     show_results_plain(df_final_display.head(50))
                 else:
                     st.warning("Nenhum resultado encontrado para as linhas enviadas.")
